@@ -81,8 +81,9 @@ async def get_category_link(category_name):
         reader = csv.DictReader(file)
         categories = list(reader)
 
+    logger.info(f"Category name: {category_name}")
     # Extract keywords from the query
-    key_words = set(category_name.lower().split())
+    key_words = set(str(category_name).lower().split())
 
     best_match = None
     best_score = 0
@@ -185,7 +186,11 @@ async def parse_companies_and_contacts(session, category_link, min_reviews=None,
                         rating, email, phone_number, location, verification_status, website, reviews = company_details
 
                         # Convert reviews to integer and filter based on the provided range
-                        reviews_count = int(re.search(r'\d+', reviews).group()) if re.search(r'\d+', reviews) else 0
+                        try:
+                            reviews_count = int(reviews)
+                        except ValueError:
+                            logger.warning(f"Invalid review count for {company_name}: {reviews}")
+                            reviews_count = 0
 
                         logger.info(f"{min_reviews} <= {reviews_count} <= {max_reviews}")
                         if min_reviews <= reviews_count <= max_reviews:
@@ -238,11 +243,15 @@ async def parse_company_details(session, company_link):
 
         # Парсинг количества отзывов
         reviews_tag = soup.find('span', class_='typography_body-l__KUYFJ typography_appearance-subtle__8_H2l styles_text__W4hWi')
-        reviews = None
+        reviews = "0"
 
         if reviews_tag:
-            reviews_match = re.search(r'[\d,]+', reviews_tag.get_text())
-            reviews = reviews_match.group().replace(',', '') if reviews_match else "0"
+            reviews_text = reviews_tag.get_text()
+            reviews_match = re.search(r'[\d,]+', reviews_text)
+            if reviews_match:
+                reviews = reviews_match.group().replace(',', '')
+            else:
+                logger.warning(f"Unable to extract review count from text: {reviews_text}")
 
         logger.info(f"Parsed details for company - Rating: {rating}, Email: {email}, Phone: {phone_number}, "
                     f"Location: {location}, Verification: {verification_status}, Website: {website}, Reviews: {reviews}")

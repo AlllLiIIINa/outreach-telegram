@@ -161,31 +161,45 @@ async def generate_search_queries(user_input):
         return [""] * 2
 
 
+
 async def create_csv(data):
     logging.info("Creating CSV file")
-    output = io.StringIO()
-    writer = csv.writer(output)
+    output = io.StringIO(newline='')
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
     writer.writerow(['Company Name', 'Website', 'Emails/Contact Info', 'Phone', 'Location', 'Rating', 'Reviews', 'Verification'])
 
     for source, item in data:
-        if source == 'TrustPilot' and isinstance(item, tuple):  # TrustPilot results
-            logging.info(f"INFO: {item}")
-            name, rating, emails, phone, location, verify, website, reviews = item[0:8]
-            writer.writerow([name, website, emails, phone, location, rating, reviews, verify])
-        elif source == 'Google Maps' and isinstance(item, tuple):  # Google Maps results
-            name, website, emails = item[0:3]
-            emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
-            writer.writerow([name, website, emails_str, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'])
-        else:
-            logging.warning(f"Unexpected data format or source: {source}, {item}")
+        try:
+            if source == 'TrustPilot' and isinstance(item, tuple):  # TrustPilot results
+                name, rating, emails, phone, location, verify, website, reviews = item + ('N/A',) * (8 - len(item))
+                writer.writerow([name, website, emails, phone, location, rating, reviews, verify])
+            elif source == 'Google Maps' and isinstance(item, tuple):  # Google Maps results
+                name, website, emails, phone, address, reviews_count = item + ('N/A',) * (6 - len(item))
+                emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
+                writer.writerow([name, website, emails_str, phone, address, 'N/A', reviews_count, 'N/A'])
+            else:
+                logging.warning(f"Unexpected data format or source: {source}, {item}")
+                row_data = list(item) if isinstance(item, tuple) else [str(item)]
+                row_data = row_data + ['N/A'] * (8 - len(row_data))
+                writer.writerow(row_data[:8])
+        except Exception as e:
+            logging.error(f"Error processing item: {source}, {item}. Error: {str(e)}")
+            row_data = [str(item)] + ['N/A'] * 7
+            writer.writerow(row_data[:8])
 
     output.seek(0)
     return output
 
 
 async def send_csv_to_telegram(chat_id, csv_data):
+    # Преобразуем StringIO в байты с явной UTF-8 кодировкой
+    byte_data = csv_data.getvalue().encode('utf-8')
+
     form_data = aiohttp.FormData()
-    form_data.add_field('document', csv_data, filename='companies_results.csv')
+    form_data.add_field('document',
+                        byte_data,
+                        filename='companies_results.csv',
+                        content_type='text/csv')
 
     logging.info("Sending CSV file to Telegram")
     async with aiohttp.ClientSession() as session:
@@ -308,17 +322,27 @@ async def handle_email_theme(message: types.Message, state: FSMContext):
     data = await state.get_data()
     sender_email = data['sender_email']
     phone_number = data['phone_number']
-    draft = await generate_email_content(prompt, sender_email, phone_number)
+
+    with open('example.html', 'r', encoding='utf-8') as file:
+        example = file.read()
+
+    draft = await generate_email_content(prompt, sender_email, phone_number, example)
+    logger.info(f"Generated email content: {draft}")
+    subject, draft = await generate_email_content(prompt, sender_email, phone_number, example)
     if draft:
-        await message.answer("Here is a draft based on your input:\n{}\nDo you approve this draft? Type 'yes' to approve, or provide your corrections.".format(draft))
-        await state.update_data(draft=draft)
+        await message.answer(
+            f"Subject: {subject}\n\nHere is a draft based on your input:\n{draft}\nDo you approve this draft? Type 'yes' to approve, or provide your corrections.")
+        await state.update_data(draft=draft, subject=subject)  # Сохраняем тему
         await state.set_state(EmailStates.awaiting_draft_review)
+
     else:
         await message.answer("Failed to generate draft, please try entering the theme again.")
 
 
-async def generate_email_content(prompt, sender_email, phone_number):
+async def generate_email_content(prompt, sender_email, phone_number, example):
     try:
+        logging.debug("Generating GPT response")
+        context = f"Here is an example of email context: {example}"
         # Generate the email content
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
@@ -326,11 +350,11 @@ async def generate_email_content(prompt, sender_email, phone_number):
                 {
                     "role": "system",
                     "content": (
-                        "You are a skilled email writer. Create a professional business email based on the user's provided theme. "
+                        "You are a skilled email writer for gmail for less then 600 tokens. Create a professional business email based on the user's provided theme. "
                         "The email should be concise, polite, and aimed at establishing a professional relationship. Use a formal tone "
-                        "and structure the email with appropriate greetings , body content Don't use placeholders like [Recipient's Company] or [specific industry/field], and sign-off."
-                        "details of the sender. Ensure the email is structured into clear paragraphs with a maximum of 300 tokens. "
-                        "Don't use placeholders like [Recipient's Company] or [specific industry/field].use only [Recipient's Name]"
+                        "and structure the email with appropriate greetings to [Recipient's Company] team and body content."
+                        "details of the sender. Ensure the email is structured into clear paragraphs, where write name of paragraphs and highlight it."
+                        f"Use this file as a base structure {context}, write html code for email. You write to [Recipient's Company] team dont use [Recipient's Name]. Use only placeholders like [Recipient's Company]."
                         "Separate each paragraph with two newlines."
                         "Don't write contact information."
                     )
@@ -340,14 +364,14 @@ async def generate_email_content(prompt, sender_email, phone_number):
                     "content": f"Theme: {prompt}. Please include placeholders for the recipient's name and company."
                 }
             ],
-            max_tokens=300
+            max_tokens=600
         )
 
-        content = response.choices[0].message['content'].strip()
+        content = response.choices[0].message['content'].strip().replace('```html', '').replace('```', '')
 
         # Extracting a suitable header from the prompt
         header_response = openai.ChatCompletion.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
@@ -369,10 +393,6 @@ async def generate_email_content(prompt, sender_email, phone_number):
         # Split content into paragraphs
         paragraphs = content.split('\n\n')
         formatted_content = ''.join(f'<p>{para}</p>' for para in paragraphs)
-
-        # Добавление трекинг-пикселя
-        tracking_pixel_url = f"http://10.31.0.169:5000/tracking-pixel?email={sender_email}"
-        tracking_pixel = f'<img src="{tracking_pixel_url}" width="1" height="1" alt=""/>'
 
         # Construct the HTML email content with a dynamic header
         html_content = f"""
@@ -405,7 +425,6 @@ async def generate_email_content(prompt, sender_email, phone_number):
             </div>
             <div class="content">
                 {formatted_content}
-                {tracking_pixel}  <!-- Вставка трекинг-пикселя -->
             </div>
             <div class="footer">
                 <p>Phone: {phone_number}</p>
@@ -415,7 +434,7 @@ async def generate_email_content(prompt, sender_email, phone_number):
         </html>
         """
 
-        return html_content
+        return header, html_content
     except Exception as e:
         print(f"Error generating email content: {str(e)}")
         return None
@@ -476,7 +495,8 @@ async def handle_document(message: types.Message, state: FSMContext):
         sender_email = data['sender_email']
         sender_password = data['password']
         draft = data['draft']
-        await send_emails_from_csv(sender_email, sender_password, 'Subject of your emails', draft, unique_filename)
+        subject = data['subject']  # Получаем сохраненную тему
+        await send_emails_from_csv(sender_email, sender_password, subject, draft, unique_filename)
         await message.answer(f"Emails have been sent successfully using your uploaded CSV: {unique_filename}.")
         await state.clear()
     else:
@@ -498,13 +518,13 @@ async def send_emails_from_csv(sender_email, sender_password, subject, content, 
             for row in reader:
                 print(f"Processing row: {row}")
                 if len(row) >= 3:
-                    recipient_name = row[0]  # Extract the recipient name from the first column
-                    company_name = row[1]    # Extract the company name from the second column
-                    recipient_email = row[2]  # Extract the email from the third column
+                    company_name = row[0]  # Extract the company name from the second column
+                    recipient_email = row[2]    # Extract the email from the third column
 
                     # Replace placeholders in the email content
-                    personalized_content = content.replace("[Recipient's Name]", recipient_name).replace("[company name]", company_name)
+                    personalized_content = content.replace("[Recipient's Company]", company_name)
 
+                    print(f"--------To: {recipient_email} Content: {personalized_content}")
                     success = send_email(sender_email, sender_password, recipient_email, subject, personalized_content)
                     if success:
                         success_count += 1
@@ -580,7 +600,7 @@ async def answer_text(message: types.Message, state: FSMContext):
 async def generate_answer_draft(text):
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "Create a professional and polite response to the following inquiry"
                                               "Don't use placeholders!!!"

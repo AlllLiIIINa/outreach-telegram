@@ -6,7 +6,6 @@ import googlemaps
 from dotenv import load_dotenv
 from aiogram.client.session import aiohttp
 
-
 logger = logging.getLogger(__name__)
 load_dotenv()
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
@@ -20,17 +19,20 @@ GOOGLE_CX = os.environ.get("GOOGLE_CX")
 
 
 async def google_search_and_extract(query):
+    all_results = []
     search_result = await fetch_places(query)
-    info = await process_search_results(search_result)
 
-    # Fetch additional pages if available
-    while 'next_page_token' in search_result:
-        await asyncio.sleep(2)
+    while True:
+        info = await process_search_results(search_result)
+        all_results.extend(info)
+
+        if 'next_page_token' not in search_result:
+            break
+
+        await asyncio.sleep(2)  # Delay to respect API limits
         search_result = await fetch_places(query, search_result['next_page_token'])
-        more_info = await process_search_results(search_result)
-        info.extend(more_info)
 
-    return info
+    return all_results
 
 
 async def fetch_places(query, page_token=None):
@@ -52,23 +54,25 @@ async def process_search_results(search_result):
             for place in search_result['results']:
                 place_id = place['place_id']
                 place_details = gmaps.place(place_id=place_id,
-                                            fields=['name', 'website', 'formatted_phone_number', 'formatted_address'])
+                                            fields=['name', 'website', 'formatted_phone_number', 'formatted_address',
+                                                    'user_ratings_total'])
                 result = place_details['result']
                 company_name = result.get('name')
                 website = result.get('website', 'No website found')
                 phone = result.get('formatted_phone_number', 'No phone found')
                 address = result.get('formatted_address', 'No address found')
+                reviews_count = result.get('user_ratings_total', 'N/A')
 
                 if website != 'No website found':
                     task = asyncio.create_task(fetch_and_parse_website(session, website))
-                    tasks.append((company_name, website, phone, address, task))
+                    tasks.append((company_name, website, phone, address, reviews_count, task))
 
-            await asyncio.gather(*[t[4] for t in tasks])
+            await asyncio.gather(*[t[5] for t in tasks])
 
-            for company_name, website, phone, address, task in tasks:
+            for company_name, website, phone, address, reviews_count, task in tasks:
                 emails = await task
                 if emails:  # Add sites where emails were found
-                    info.append((company_name, website, emails, phone, address, 'N/A'))
+                    info.append((company_name, website, emails, phone, address, reviews_count))
 
     return info
 
