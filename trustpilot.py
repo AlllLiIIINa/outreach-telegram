@@ -34,9 +34,9 @@ async def gpt_parse_query(prompt):
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful assistant that extracts category, country, city, rating, min reviews and max reviews from a query string. "
+                        "You are a helpful english assistant (so answer only on english) that extracts category, country, city, rating, min reviews and max reviews from a query string. "
                         "If a city is provided, determine the country that city belongs to and return the country's abbreviation (ISO 3166-1 alpha-2 code). "
-                        "Return the output as a JSON object with keys: 'category', 'country', 'city', 'rating', 'min_reviews' and 'max_reviews'."
+                        "Return the output on english as a JSON object with keys: 'category', 'country', 'city', 'rating', 'min_reviews' and 'max_reviews'."
                     )
                 },
                 {

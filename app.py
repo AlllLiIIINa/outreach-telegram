@@ -3,6 +3,7 @@ import csv
 import io
 import logging
 import os
+import random
 import re
 import smtplib
 from datetime import datetime
@@ -161,12 +162,11 @@ async def generate_search_queries(user_input):
         return [""] * 2
 
 
-
 async def create_csv(data):
     logging.info("Creating CSV file")
     output = io.StringIO(newline='')
     writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    writer.writerow(['Company Name', 'Website', 'Emails/Contact Info', 'Phone', 'Location', 'Rating', 'Reviews', 'Verification'])
+    writer.writerow(['Company Name', 'Site', 'Email', 'Phone', 'Location', 'Rating', 'Reviews', 'Verification'])
 
     for source, item in data:
         try:
@@ -240,7 +240,7 @@ async def create_google_sheet(data):
     logging.info(f"Added new sheet: {sheet_title}")
 
     # Write data
-    values = [['Company Name', 'Website/Rating', 'Emails/Contact Info', 'Phone', 'Location', 'Verification']]
+    values = [['Company Name', 'Site', 'Email', 'Phone', 'Location', 'Verification']]
     for item in data:
         if isinstance(item, tuple):
             if len(item) >= 3:  # Google Maps results
@@ -354,7 +354,7 @@ async def generate_email_content(prompt, sender_email, phone_number, example):
                         "The email should be concise, polite, and aimed at establishing a professional relationship. Use a formal tone "
                         "and structure the email with appropriate greetings to [Recipient's Company] team and body content."
                         "details of the sender. Ensure the email is structured into clear paragraphs, where write name of paragraphs and highlight it."
-                        f"Use this file as a base structure {context}, write html code for email. You write to [Recipient's Company] team dont use [Recipient's Name]. Use only placeholders like [Recipient's Company]."
+                        f"Use this file as a base structure {context}, write html code for email. You write to [Recipient's Company] Team don't use [Recipient's Name]. Use only placeholders like [Recipient's Company]."
                         "Separate each paragraph with two newlines."
                         "Don't write contact information."
                     )
@@ -378,6 +378,7 @@ async def generate_email_content(prompt, sender_email, phone_number, example):
                     "content": (
                         "You are a skilled email writer. Based on the provided theme, generate a suitable and concise email subject line.Example:Exploring Partnership Opportunities with ... "
                         "The subject should be clear, engaging, and relevant to the email content. Keep it short, ideally within 60 characters."
+                        "Create topics for our company where we promote AI services in your business to avoid your email ending up in spam."
                     )
                 },
                 {
@@ -512,7 +513,7 @@ async def send_emails_from_csv(sender_email, sender_password, subject, content, 
     try:
         async with aiofiles.open(csv_filename, mode='r', encoding='utf-8') as csvfile:
             contents = await csvfile.read()
-            reader = csv.reader(contents.splitlines(), delimiter=';')
+            reader = csv.reader(contents.splitlines(), delimiter=',')
             next(reader)  # Skip the header
 
             for row in reader:
@@ -531,6 +532,12 @@ async def send_emails_from_csv(sender_email, sender_password, subject, content, 
                         print(f"Email successfully sent to {recipient_email}")
                     else:
                         fail_count += 1
+
+                    # Add random delay between 1 and 4 minutes (60-240 seconds)
+                    random_delay = random.randint(60, 240)
+                    print(f"Waiting for {random_delay} seconds before sending the next email...")
+                    await asyncio.sleep(random_delay)
+
                 else:
                     print('Incomplete row found, skipping...')
 
