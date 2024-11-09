@@ -81,19 +81,19 @@ async def fetch_and_parse_website(session, url):
     try:
         async with session.get(url) as response:
             html_content = await response.text()
-            emails = parse_html(html_content)
+            emails = await parse_html(html_content)
             return emails
     except Exception as e:
         logger.error(f"Error fetching or parsing {url}: {str(e)}")
         return []
 
 
-def parse_html(html_content):
+async def parse_html(html_content):
     emails = set(re.findall(r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]{2,}\b", html_content))
-    return filter_emails(emails)
+    return await filter_emails(emails)
 
 
-def filter_emails(emails):
+async def filter_emails(emails):
     ignore_patterns = [
         r'sentry\..+',
         r'wixpress\.com',

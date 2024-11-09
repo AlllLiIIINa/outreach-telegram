@@ -4,12 +4,30 @@ import json
 import logging
 import random
 import re
+from dataclasses import dataclass
+from typing import List, Dict, Optional
 from urllib.parse import urljoin
 import aiofiles
 import aiohttp
 import openai
 from bs4 import BeautifulSoup
 from fuzzywuzzy import process
+
+
+@dataclass
+class SearchParameters:
+    category: str
+    country: str
+    city: str
+    rating: int
+    min_reviews: int
+    max_reviews: int
+
+
+@dataclass
+class SearchResult:
+    parameters: SearchParameters
+    parsed_data: List[Dict]
 
 
 logger = logging.getLogger(__name__)
@@ -227,7 +245,7 @@ async def parse_company_details(session, company_link):
 
         # Парсинг телефона
         phone_tag = soup.find('a', href=lambda href: href and "tel:" in href)
-        phone_number = clean_phone_number(phone_tag.get_text().strip()) if phone_tag else None
+        phone_number = await clean_phone_number(phone_tag.get_text().strip()) if phone_tag else None
 
         # Парсинг локации
         location_tag = soup.find('ul', class_='styles_contactInfoAddressList__RxiJI')
@@ -256,46 +274,62 @@ async def parse_company_details(session, company_link):
         logger.info(f"Parsed details for company - Rating: {rating}, Email: {email}, Phone: {phone_number}, "
                     f"Location: {location}, Verification: {verification_status}, Website: {website}, Reviews: {reviews}")
 
-        return rating, email, phone_number, location, verification_status, website, reviews
+        return website, email, phone_number, location, rating,  reviews, verification_status
 
 
-def clean_phone_number(phone_number):
+async def clean_phone_number(phone_number):
     return re.sub(r'\D', '', phone_number)
 
 
-async def trustpilot_search(query):
+async def trustpilot_search(query: str) -> Optional[SearchResult]:
     logging.info(f"Processing query for trustpilot: {query}")
     gpt_response = await gpt_parse_query(query)
 
     if not gpt_response:
         logger.warning("Failed to extract details from query")
-        return []
+        return None
 
     try:
         cleaned_response = gpt_response.strip().strip('```json').strip('```')
-
         logger.info(f"Cleaned GPT response: {cleaned_response}")
         parsed_query = json.loads(cleaned_response)
 
-        category = parsed_query.get("category")
-        country = parsed_query.get("country")
-        city = parsed_query.get("city")
-        rating = parsed_query.get("rating", 0)
-        min_reviews = parsed_query.get("min_reviews", 0)
-        max_reviews = parsed_query.get("max_reviews", 999999)
+        # Создаем структуру с параметрами поиска
+        search_params = SearchParameters(
+            category=parsed_query.get("category", ""),
+            country=parsed_query.get("country", ""),
+            city=parsed_query.get("city", ""),
+            rating=parsed_query.get("rating", 0),
+            min_reviews=parsed_query.get("min_reviews", 0),
+            max_reviews=parsed_query.get("max_reviews", 999999)
+        )
 
-        category_link = await get_category_link(category)
+        category_link = await get_category_link(search_params.category)
 
         if category_link:
-            trustpilot_url = await build_trustpilot_url(category_link, country, city, rating)
+            trustpilot_url = await build_trustpilot_url(
+                category_link,
+                search_params.country,
+                search_params.city,
+                search_params.rating
+            )
 
-            # Ensure proper session management
             async with aiohttp.ClientSession() as session:
-                return await parse_companies_and_contacts(session, trustpilot_url, min_reviews, max_reviews)
+                parsed_data = await parse_companies_and_contacts(
+                    session,
+                    trustpilot_url,
+                    search_params.min_reviews,
+                    search_params.max_reviews
+                )
 
-        logger.warning(f"Failed to find a matching category for: {category}")
-        return []
+                return SearchResult(
+                    parameters=search_params,
+                    parsed_data=parsed_data
+                )
+
+        logger.warning(f"Failed to find a matching category for: {search_params.category}")
+        return None
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse GPT response: {gpt_response} with error {e}")
-        return []  # Handle error by returning empty or as needed
+        return None

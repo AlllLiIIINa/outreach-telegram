@@ -19,9 +19,8 @@ from aiogram.filters import Command
 from aiogram.filters.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 from google_maps import google_search_and_extract
+from google_sheets import create_google_sheet
 from trustpilot import trustpilot_search
 
 
@@ -55,18 +54,6 @@ load_dotenv()
 # Set up logging to display information in the console.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Настройки для Google Sheets
-SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE")
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/drive.file'
-]
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-sheets_service = build('sheets', 'v4', credentials=credentials)
-drive_service = build('drive', 'v3', credentials=credentials)
 
 # Bot token obtained from BotFather in Telegram.
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -107,6 +94,7 @@ async def handle_text_query(message: types.Message):
     queries = await generate_search_queries(user_input)
     all_results = []
 
+    # Google Maps поиск
     for query in queries:
         clean_query = re.sub(r'^\d+\.\s*"', '', query).strip('"')
         if clean_query:
@@ -116,9 +104,17 @@ async def handle_text_query(message: types.Message):
                 all_results.append(('Google Maps', result))
             logging.info(f"Results found for {clean_query}: {len(results)}")
 
-    trustpilot_info = await trustpilot_search(user_input)
-    for info in trustpilot_info:
-        all_results.append(('TrustPilot', info))
+    # Trustpilot поиск
+    trustpilot_result = await trustpilot_search(user_input)
+    if trustpilot_result:
+        # Логируем параметры поиска
+        logging.info(f"Search parameters: Category: {trustpilot_result.parameters.category}, "
+                     f"Country: {trustpilot_result.parameters.country}, "
+                     f"City: {trustpilot_result.parameters.city}")
+
+        # Добавляем результаты парсинга
+        for info in trustpilot_result.parsed_data:
+            all_results.append(('TrustPilot', info))
 
     if not all_results:
         logging.info("No results found.")
@@ -127,12 +123,19 @@ async def handle_text_query(message: types.Message):
 
     logging.info(f"Total results found: {len(all_results)}")
 
+    # Создание CSV и отправка
     csv_data = await create_csv(all_results)
     await send_csv_to_telegram(message.chat.id, csv_data)
     logging.info("CSV file sent to Telegram")
 
-    # Запись данных в Google Sheets
-    spreadsheet_id = await create_google_sheet(all_results)
+    # Запись в Google Sheets с дополнительной информацией о параметрах поиска
+    query_details = {
+        "category": trustpilot_result.parameters.category if trustpilot_result else "",
+        "country": trustpilot_result.parameters.country if trustpilot_result else "",
+        "city": trustpilot_result.parameters.city if trustpilot_result else ""
+    }
+
+    spreadsheet_id = await create_google_sheet(message, all_results, query_details)
     logging.info(f"Data written to Google Sheets. Spreadsheet ID: {spreadsheet_id}")
 
 
@@ -166,17 +169,17 @@ async def create_csv(data):
     logging.info("Creating CSV file")
     output = io.StringIO(newline='')
     writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    writer.writerow(['Company Name', 'Site', 'Email', 'Phone', 'Location', 'Rating', 'Reviews', 'Verification'])
+    writer.writerow(['Company Name', 'Website', 'Email', 'Phone', 'Location', 'Rating', 'Reviews', 'Verification'])
 
     for source, item in data:
         try:
             if source == 'TrustPilot' and isinstance(item, tuple):  # TrustPilot results
-                name, rating, emails, phone, location, verify, website, reviews = item + ('N/A',) * (8 - len(item))
+                name, website, emails, phone, location, rating, reviews, verify = item + ('N/A',) * (8 - len(item))
                 writer.writerow([name, website, emails, phone, location, rating, reviews, verify])
             elif source == 'Google Maps' and isinstance(item, tuple):  # Google Maps results
-                name, website, emails, phone, address, reviews_count = item + ('N/A',) * (6 - len(item))
+                name, website, emails, phone, location, reviews = item + ('N/A',) * (6 - len(item))
                 emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
-                writer.writerow([name, website, emails_str, phone, address, 'N/A', reviews_count, 'N/A'])
+                writer.writerow([name, website, emails_str, phone, location, 'N/A', reviews, 'N/A'])
             else:
                 logging.warning(f"Unexpected data format or source: {source}, {item}")
                 row_data = list(item) if isinstance(item, tuple) else [str(item)]
@@ -215,63 +218,6 @@ async def send_csv_to_telegram(chat_id, csv_data):
             logging.error(f"Error sending CSV file to Telegram: {str(e)}")
 
 
-async def create_google_sheet(data):
-    # Create a new table
-    spreadsheet = {
-        'properties': {
-            'title': f'Search Results {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-        }
-    }
-    spreadsheet = sheets_service.spreadsheets().create(body=spreadsheet, fields='spreadsheetId').execute()
-    spreadsheet_id = spreadsheet.get('spreadsheetId')
-    logging.info(f'New Spreadsheet created. ID: {spreadsheet_id}')
-
-    # Create a new sheet
-    sheet_title = f'Results {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-    requests = [{
-        "addSheet": {
-            "properties": {
-                "title": sheet_title
-            }
-        }
-    }]
-    body = {'requests': requests}
-    response = sheets_service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
-    logging.info(f"Added new sheet: {sheet_title}")
-
-    # Write data
-    values = [['Company Name', 'Site', 'Email', 'Phone', 'Location', 'Verification']]
-    for item in data:
-        if isinstance(item, tuple):
-            if len(item) >= 3:  # Google Maps results
-                name, website, emails = item[:3]
-                emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
-                values.append([name, website, emails_str, 'N/A', 'N/A', 'N/A'])
-            elif len(item) == 6:  # TrustPilot results
-                values.append(list(item))
-            else:
-                logging.warning(f"Unexpected data format: {item}")
-        else:
-            logging.warning(f"Unexpected item type in data: {type(item)}")
-
-    body = {'values': values}
-    result = sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id, range=f'{sheet_title}!A1',
-        valueInputOption='RAW', body=body).execute()
-    logging.info(f"{result.get('updatedCells')} cells updated.")
-
-    # Granting access
-    permission = {
-        'type': 'user',
-        'role': 'writer',
-        'emailAddress': 'Ivangul999@gmail.com'
-    }
-    drive_service.permissions().create(fileId=spreadsheet_id, body=permission).execute()
-    logging.info('Access granted to Ivangul999@gmail.com')
-
-    return spreadsheet_id
-
-
 # Start the command to input the sender's email address
 @router.message(Command("send_email"))
 async def send_email_command(message: types.Message, state: FSMContext):
@@ -283,7 +229,7 @@ async def send_email_command(message: types.Message, state: FSMContext):
 @router.message(EmailStates.awaiting_sender_email)
 async def handle_sender_email(message: types.Message, state: FSMContext):
     sender_email = message.text
-    if is_valid_email(sender_email):
+    if await is_valid_email(sender_email):
         await message.answer("Sender email set. Please enter your phone number:")
         await state.update_data(sender_email=sender_email)
         await state.set_state(EmailStates.awaiting_phone_number)
@@ -292,7 +238,7 @@ async def handle_sender_email(message: types.Message, state: FSMContext):
 
 
 # Utility function to validate an email address format
-def is_valid_email(email):
+async def is_valid_email(email):
     pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
     return re.match(pattern, email) is not None
 
@@ -526,7 +472,7 @@ async def send_emails_from_csv(sender_email, sender_password, subject, content, 
                     personalized_content = content.replace("[Recipient's Company]", company_name)
 
                     print(f"--------To: {recipient_email} Content: {personalized_content}")
-                    success = send_email(sender_email, sender_password, recipient_email, subject, personalized_content)
+                    success = await send_email(sender_email, sender_password, recipient_email, subject, personalized_content)
                     if success:
                         success_count += 1
                         print(f"Email successfully sent to {recipient_email}")
@@ -548,7 +494,7 @@ async def send_emails_from_csv(sender_email, sender_password, subject, content, 
 
 
 # Function to send an email via SMTP
-def send_email(sender_email, sender_password, recipient_email, subject, content):
+async def send_email(sender_email, sender_password, recipient_email, subject, content):
     print("Preparing message content...")
 
     # Create the email message object with UTF-8 encoding
@@ -665,7 +611,7 @@ async def handle_password(message: types.Message, state: FSMContext):
     sender_password = data['password']
 
     subject = "Response to your inquiry"
-    success = send_email_answer(sender_email, sender_password, recipient_email, subject, draft)
+    success = await send_email_answer(sender_email, sender_password, recipient_email, subject, draft)
     if success:
         await message.answer(f"Your answer has been sent to {recipient_email}.")
     else:
@@ -675,7 +621,7 @@ async def handle_password(message: types.Message, state: FSMContext):
 
 
 # Function to send an email via SMTP
-def send_email_answer(sender_email, sender_password, recipient_email, subject, content):
+async def send_email_answer(sender_email, sender_password, recipient_email, subject, content):
     print("Preparing message content...")
 
     # Create the email message object with UTF-8 encoding
@@ -704,19 +650,6 @@ def send_email_answer(sender_email, sender_password, recipient_email, subject, c
     except Exception as e:
         print(f"Failed to send email via {smtp_server}: {str(e)}")
         return False
-
-
-def is_valid_email_answer(email):
-    pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
-    return re.match(pattern, email) is not None
-
-
-def extract_code_from_message(text):
-    # Extract the code parameter from the callback URL
-    if "code=" in text:
-        code = text.split("code=")[1].split("&")[0]
-        return code
-    return None
 
 
 # Main function to start the bot.
