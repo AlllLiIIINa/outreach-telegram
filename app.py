@@ -94,7 +94,7 @@ async def handle_text_query(message: types.Message):
     queries = await generate_search_queries(user_input)
     all_results = []
 
-    # Google Maps поиск
+    # Google Maps search
     for query in queries:
         clean_query = re.sub(r'^\d+\.\s*"', '', query).strip('"')
         if clean_query:
@@ -104,15 +104,9 @@ async def handle_text_query(message: types.Message):
                 all_results.append(('Google Maps', result))
             logging.info(f"Results found for {clean_query}: {len(results)}")
 
-    # Trustpilot поиск
+    # Trustpilot search
     trustpilot_result = await trustpilot_search(user_input)
     if trustpilot_result:
-        # Логируем параметры поиска
-        logging.info(f"Search parameters: Category: {trustpilot_result.parameters.category}, "
-                     f"Country: {trustpilot_result.parameters.country}, "
-                     f"City: {trustpilot_result.parameters.city}")
-
-        # Добавляем результаты парсинга
         for info in trustpilot_result.parsed_data:
             all_results.append(('TrustPilot', info))
 
@@ -123,12 +117,12 @@ async def handle_text_query(message: types.Message):
 
     logging.info(f"Total results found: {len(all_results)}")
 
-    # Создание CSV и отправка
+    # Create CSV and send
     csv_data = await create_csv(all_results)
     await send_csv_to_telegram(message.chat.id, csv_data)
     logging.info("CSV file sent to Telegram")
 
-    # Запись в Google Sheets с дополнительной информацией о параметрах поиска
+    # Post in Google Sheets with additional information about search parameters
     query_details = {
         "category": trustpilot_result.parameters.category if trustpilot_result else "",
         "country": trustpilot_result.parameters.country if trustpilot_result else "",
@@ -195,7 +189,7 @@ async def create_csv(data):
 
 
 async def send_csv_to_telegram(chat_id, csv_data):
-    # Преобразуем StringIO в байты с явной UTF-8 кодировкой
+   # Convert StringIO to bytes with explicit UTF-8 encoding
     byte_data = csv_data.getvalue().encode('utf-8')
 
     form_data = aiohttp.FormData()
@@ -278,7 +272,7 @@ async def handle_email_theme(message: types.Message, state: FSMContext):
     if draft:
         await message.answer(
             f"Subject: {subject}\n\nHere is a draft based on your input:\n{draft}\nDo you approve this draft? Type 'yes' to approve, or provide your corrections.")
-        await state.update_data(draft=draft, subject=subject)  # Сохраняем тему
+        await state.update_data(draft=draft, subject=subject)  # Save the topic
         await state.set_state(EmailStates.awaiting_draft_review)
 
     else:
@@ -442,7 +436,7 @@ async def handle_document(message: types.Message, state: FSMContext):
         sender_email = data['sender_email']
         sender_password = data['password']
         draft = data['draft']
-        subject = data['subject']  # Получаем сохраненную тему
+        subject = data['subject']  # Get the saved topic
         await send_emails_from_csv(sender_email, sender_password, subject, draft, unique_filename)
         await message.answer(f"Emails have been sent successfully using your uploaded CSV: {unique_filename}.")
         await state.clear()

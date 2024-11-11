@@ -6,14 +6,11 @@ import googlemaps
 from dotenv import load_dotenv
 from aiogram.client.session import aiohttp
 
-logger = logging.getLogger(__name__)
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
-
-# Initialize Google Maps client
 gmaps = googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
-
-# Ключ API и ID поисковой системы для Google Custom Search
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_CX = os.environ.get("GOOGLE_CX")
 

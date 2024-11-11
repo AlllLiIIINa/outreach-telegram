@@ -31,7 +31,7 @@ class GoogleSheetsHandler:
     async def find_user_spreadsheet(self, username):
         """Find existing spreadsheet for user"""
         try:
-            # Поиск файла по названию
+            # Search for a file by name
             query = f"name = 'Results for {username}'"
             results = self.drive_service.files().list(
                 q=query,
@@ -94,7 +94,9 @@ class GoogleSheetsHandler:
             raise
 
     async def create_sheet_for_query(self, spreadsheet_id, query_details, data):
-        """Create new sheet for specific search query"""
+        """Create new sheet for specific search query and format data with WhatsApp links"""
+        row = ""
+
         try:
             # Extract query details
             category = query_details.get("category", "Unknown")
@@ -112,7 +114,7 @@ class GoogleSheetsHandler:
                         "title": sheet_name,
                         "gridProperties": {
                             "rowCount": 1000,
-                            "columnCount": 9
+                            "columnCount": 10
                         }
                     }
                 }
@@ -124,10 +126,19 @@ class GoogleSheetsHandler:
                 body=body
             ).execute()
 
-            # Prepare data for writing
-            headers = ['Source', 'Company Name', 'Website', 'Email', 'Phone', 'Location', 'Rating', 'Reviews',
-                       'Verification']
+            # Headers
+            headers = ['Source', 'Company Name', 'Website', 'Email', 'Phone', 'WhatsApp Link',
+                       'Location', 'Rating', 'Reviews', 'Verification']
             values = [headers]
+
+            def create_whatsapp_link(phone_num):
+                if not phone_num or phone_num == 'N/A':
+                    return 'N/A'
+
+                digits = ''.join(re.findall(r'\d+', phone_num))  # Extract only digits from phone number
+                if len(digits) >= 8:  # Check if we have enough digits for a valid phone number
+                    return f"https://wa.me/{digits}"
+                return 'N/A'
 
             # Process the data
             for source, company_data in data:
@@ -138,66 +149,50 @@ class GoogleSheetsHandler:
                     name, website, emails, phone, location, rating, reviews, verify = company_data + ('N/A',) * (
                             8 - len(company_data))
                     emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
-                    # wa_phone = f"https://wa.me/{''.join(re.findall(r'\d', phone))}"
-                    name, website, emails_str,  phone, location, rating, reviews, verify = (
-                        str(x).ljust(len(str(x))) for x in (
-                            name, website, emails_str, phone, location, rating, reviews, verify
+                    whatsapp_link = create_whatsapp_link(phone)
+
+                    # Format all fields
+                    name, website, emails_str, phone, whatsapp_link, location, rating, reviews, verify = (
+                        str(x).strip() for x in (
+                            name, website, emails_str, phone, whatsapp_link, location, rating, reviews, verify
                         )
                     )
-                    row = [source, name, website, emails_str, phone, location, rating, reviews, verify]
+                    row = [source, name, website, emails_str, phone, whatsapp_link,
+                           location, rating, reviews, verify]
 
                 elif source == 'Google Maps' and isinstance(company_data, tuple):
                     # Handle Google Maps data
                     name, website, emails, phone, location, reviews = company_data + ('N/A',) * (6 - len(company_data))
                     emails_str = ', '.join(emails) if isinstance(emails, list) else str(emails)
-                    # wa_phone = f"https://wa.me/{''.join(re.findall(r'\d', phone))}"
-                    name, website, emails_str, phone, location, reviews = (
-                        str(x).ljust(len(str(x))) for x in (
-                            name, website, emails_str, phone, location, reviews
+                    whatsapp_link = create_whatsapp_link(phone)
+
+                    # Format all fields
+                    name, website, emails_str, phone, whatsapp_link, location, reviews = (
+                        str(x).strip() for x in (
+                            name, website, emails_str, phone, whatsapp_link, location, reviews
                         )
                     )
-                    row = [source, name, website, emails_str, phone, location, 'N/A', reviews, 'N/A']
-
-                elif isinstance(company_data, dict):
-                    # Handle dictionary format (legacy support)
-                    name = str(company_data.get('name', 'N/A')).ljust
-                    website = str(company_data.get('site', 'N/A')).ljust
-                    emails = str(company_data.get('email', 'N/A')).ljust
-                    phone = str(company_data.get('phone', 'N/A')).ljust
-                    wa_phone = f"https://wa.me/{''.join(re.findall(r'\d', phone))}"
-                    location = str(company_data.get('location', 'N/A')).ljust
-                    reviews = str(company_data.get('reviews', 'N/A')).ljust
-                    verify = str(company_data.get('verification', 'N/A')).ljust
-
-                    if source == 'Google Maps':
-                        row = [source, name, website, emails, phone, location, 'N/A', reviews, verify]
-                    else:  # TrustPilot
-                        rating = str(company_data.get('rating', 'N/A'))
-                        row = [source, name, website, emails, phone, location, rating, reviews, verify]
-
-                else:
-                    logging.warning(f"Unexpected data format: {type(company_data)}")
-                    continue
+                    row = [source, name, website, emails_str, phone, whatsapp_link,
+                           location, 'N/A', reviews, 'N/A']
 
                 values.append(row)
 
-            # Write data to sheet
-            range_name = f'{sheet_name}!A1:I{len(values)}'
-            body = {'values': values}
-            logging.info(f"Writing data to sheet. Range: {range_name}, Values count: {len(values)}")
-
-            result = self.sheets_service.spreadsheets().values().update(
+            # Write the data to the sheet
+            range_name = f"{sheet_name}!A1:J{len(values)}"
+            body = {
+                'values': values
+            }
+            self.sheets_service.spreadsheets().values().update(
                 spreadsheetId=spreadsheet_id,
                 range=range_name,
                 valueInputOption='RAW',
                 body=body
             ).execute()
 
-            logging.info(
-                f'Created new sheet "{sheet_name}" and wrote {len(values) - 1} rows of data. Update result: {result}')
+            return sheet_name
 
-        except HttpError as error:
-            logging.error(f'Error creating sheet: {error}')
+        except Exception as e:
+            logging.error(f"Error creating sheet: {str(e)}")
             raise
 
 
